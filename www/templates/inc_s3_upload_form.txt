@@ -1,0 +1,7 @@
+<form method="POST" enctype="multipart/form-data" action="{$s3_bucket_url}">
+{foreach from=$s3_params item="v" key="k"}
+	<input type="hidden" name="{$k|escape}" value="{$v|escape}" />
+{/foreach}
+<input type="file" name="file" />
+<input type="submit" value="POST" />
+</form>

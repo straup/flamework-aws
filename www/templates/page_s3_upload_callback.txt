@@ -1,0 +1,9 @@
+{include file="inc_head.txt"}
+
+{if $success}
+<p>Your uploaded succeeded.</p>
+{else}
+<p>There was a problem uploading your file to S3.</p>
+{/if}
+
+{include file="inc_foot.txt"}
