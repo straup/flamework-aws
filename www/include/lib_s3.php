@@ -11,7 +11,20 @@
 	}
 
 	########################################################################
-
+	
+	function s3_get_bucket_exists($bucket) {
+	   
+		$url = s3_signed_object_url($bucket, '');
+		$rsp = http_get($url);
+		
+		return $rsp;
+		
+	}
+	
+	########################################################################
+	
+	
+	
 	function s3_put(&$bucket, $args){
 
 		$defaults = array(
@@ -29,15 +42,22 @@
 		$date = date('D, d M Y H:i:s T');
 		$path = "/{$bucket['id']}/{$args['id']}";
 
-		$parts = array(
-			'PUT',
-			$bytes_enc,
-			$args['content_type'],
-			$date,
-			"x-amz-acl:{$args['acl']}",
-			$path,
-		);
+		$parts = array();
 
+		$parts[] = 'PUT';
+		$parts[] = $bytes_enc;
+		$parts[] = $args['content_type'];
+		$parts[] = $date;
+		$parts[] = "x-amz-acl:{$args['acl']}";
+		
+		if ($args['meta']) {
+			foreach ($args['meta'] as $k => $v) {
+				$parts[] = "x-amz-meta-$k:$v";
+			}
+		}
+		
+		$parts[] = $path;
+		
 		$raw = implode("\n", $parts);
 
 		$sig = s3_sign_auth_string($bucket, $raw);
@@ -54,6 +74,12 @@
 			'Authorization' => $auth,
 		);
 
+		if ($args['meta']) {
+			foreach ($args['meta'] as $k => $v) {
+				$headers["X-Amz-Meta-$k"] = $v;
+			}
+		}
+		
 		# See this? It's important. AWS freaks out at the mere presence
 		# of the 'Transfer-Encoding' header. Thanks, Roy...
 
@@ -112,9 +138,9 @@
 		$ymd = gmdate('Y-m-d', $args['expires']);
 		$hmd = gmdate('H:i:s', $args['expires']);
 
-	        $policy = array(
+			$policy = array(
 			'expiration' => "{$ymd}T{$hmd}Z",
-                        'conditions' => $conditions,
+						'conditions' => $conditions,
 		);
 
 		$policy = json_encode($policy);
@@ -154,10 +180,9 @@
 			'expires' => time() + 300,
 			'method' => 'HEAD',
 		);
-
-		$url = s3_signed_object_url($bucket, $object_id, $more);
-		$rsp = http_head($url);
-
+		
+		$rsp = s3_head($bucket, $object_id, $more);
+		
 		if (! $rsp['ok']){
 			return $rsp;
 		}
@@ -171,6 +196,24 @@
 
 	########################################################################
 
+	function s3_head($bucket, $object_id, $args=array()) {
+		
+		$defaults = array(
+			'expires' => time() + 300,
+			'method' => 'HEAD',
+		);
+		
+		$args = array_merge($defaults, $args);
+	
+		$url = s3_signed_object_url($bucket, $object_id, $args);
+
+		$rsp = http_head($url);
+
+		return $rsp;
+	}
+	
+	########################################################################
+		
 	function s3_unsigned_object_url(&$bucket, $object_id){
 
 		$bucket_url = s3_get_bucket_url($bucket);
@@ -205,7 +248,7 @@
 		$raw = implode("\n", $parts);
 
 		$sig = s3_sign_auth_string($bucket, $raw);
-        	$sig = base64_encode($sig);
+		$sig = base64_encode($sig);
 
 		$query = array(
 			'Signature' => $sig,
