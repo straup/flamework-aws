@@ -51,6 +51,7 @@
 		$parts[] = "x-amz-acl:{$args['acl']}";
 		
 		if ($args['meta']) {
+            ksort($args['meta']);
 			foreach ($args['meta'] as $k => $v) {
 				$parts[] = "x-amz-meta-$k:$v";
 			}
@@ -138,7 +139,7 @@
 		$ymd = gmdate('Y-m-d', $args['expires']);
 		$hmd = gmdate('H:i:s', $args['expires']);
 
-			$policy = array(
+        $policy = array(
 			'expiration' => "{$ymd}T{$hmd}Z",
 						'conditions' => $conditions,
 		);
