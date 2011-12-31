@@ -51,7 +51,10 @@
 		$parts[] = "x-amz-acl:{$args['acl']}";
 		
 		if ($args['meta']) {
-			foreach ($args['meta'] as $k => $v) {
+
+			ksort($args['meta']);
+
+			foreach ($args['meta'] as $k => $v){
 				$parts[] = "x-amz-meta-$k:$v";
 			}
 		}
