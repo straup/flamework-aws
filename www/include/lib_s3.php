@@ -20,7 +20,18 @@
 		return $rsp;
 		
 	}
+
+
+	# list contents of a bucket
+	#   params support added for marker and prefix
+	#
 	
+	function s3_get_bucket($bucket, $more) {
+		$url = s3_signed_object_url($bucket, '', array('params' => $more));
+		$rsp = http_get($url);
+		return $rsp;
+	}
+
 	########################################################################
 	
 	
@@ -256,6 +267,10 @@
 			'AWSAccessKeyId' => $bucket['key'],
 			'Expires' => $args['expires'],
 		);
+
+		if ($args['params']) {
+		    $query = array_merge($query, $args['params']);
+		}
 
 		$query = http_build_query($query);
 
