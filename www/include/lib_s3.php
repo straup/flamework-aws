@@ -2,6 +2,8 @@
 
 	loadlib("http");
 
+	# http://docs.aws.amazon.com/AmazonS3/latest/API/APIRest.html
+
 	########################################################################
 
 	function s3_get_bucket_url($bucket){
@@ -16,9 +18,8 @@
 	   
 		$url = s3_signed_object_url($bucket, '');
 		$rsp = http_get($url);
-		
-		return $rsp;
-		
+
+		return s3_parse_response($rsp);		
 	}
 
 
@@ -29,7 +30,7 @@
 	function s3_get_bucket($bucket, $more) {
 		$url = s3_signed_object_url($bucket, '', array('params' => $more));
 		$rsp = http_get($url);
-		return $rsp;
+		return s3_parse_response($rsp);
 	}
 
 	########################################################################
@@ -52,7 +53,7 @@
 			$query = implode("&", $query);
 		}
 
-		$date = date('D, d M Y H:i:s T');
+		$date = gmdate('D, d M Y H:i:s T');
 		$path = "/{$bucket['id']}/{$object_id}";
 
 		if ($query){
@@ -86,7 +87,8 @@
 			$object_url .= "?{$query}";
 		}
 
-		return http_get($object_url, $headers);
+		$rsp = http_get($object_url, $headers);
+		return s3_parse_response($rsp);
 	}
 	
 	########################################################################
@@ -110,21 +112,30 @@
 		$json = json_encode($xml);
 		$json = json_decode($json, 'as hash');
 
-		return okay(array(
+		return array(
+			'ok' => 1,
 			'acl' => $json
-		));
+		);
 
 	}
 
 	########################################################################
 
-	function s3_put($bucket, $args){
+	function s3_put($bucket, $args, $more=array()){
 
-		$defaults = array(
+		$default_args = array(
 			'acl' => 'private',
 		);
 
-		$args = array_merge($defaults, $args);
+		$default_more = array(
+			'http_timeout' => 60,
+			# See this? It's important. AWS freaks out at the mere presence
+			# of the 'Transfer-Encoding' header. Thanks, Roy...
+			'donotsend_transfer_encoding' => 1,
+		);
+
+		$args = array_merge($default_args, $args);
+		$more = array_merge($default_more, $more);
 
 		# TO DO: account for PUT-ing of a file and
 		# not just bits (aka $args['data'])
@@ -132,7 +143,7 @@
 		$bytes_hashed = md5($args['data'], true);
 		$bytes_enc = base64_encode($bytes_hashed);
 
-		$date = date('D, d M Y H:i:s T');
+		$date = gmdate('D, d M Y H:i:s T');
 		$path = "/{$bucket['id']}/{$args['id']}";
 
 		$parts = array();
@@ -176,27 +187,20 @@
 			}
 		}
 		
-		# See this? It's important. AWS freaks out at the mere presence
-		# of the 'Transfer-Encoding' header. Thanks, Roy...
-
-		$more = array(
-			'donotsend_transfer_encoding' => 1,
-		);
-
 		$bucket_url = s3_get_bucket_url($bucket);
 
 		# enurl-ify ?
 		$object_url = $bucket_url . $args['id'];
 
 		$rsp = http_put($object_url, $args['data'], $headers, $more);
-		return $rsp;
+		return s3_parse_response($rsp);
 	}
 
 	########################################################################
 
 	function s3_delete($bucket, $object_id){
 
-		$date = date('D, d M Y H:i:s T');
+		$date = gmdate('D, d M Y H:i:s T');
 		$path = "/{$bucket['id']}/{$object_id}";
 
 		$parts = array(
@@ -232,10 +236,90 @@
 		$object_url = $bucket_url . $object_id;
 
 		$rsp = http_delete($object_url, '', $headers, $more);
-		return $rsp;
+		return s3_parse_response($rsp);
 	}
 
 	########################################################################
+
+	# http://docs.aws.amazon.com/AmazonS3/latest/API/RESTObjectCOPY.html
+	# https://doc.s3.amazonaws.com/proposals/copy.html#Requesting_a_Copy_with_REST
+	# http://www.bucketexplorer.com/documentation/amazon-s3--copy-s3-objects-in-a-single-operation-put-object-copy.html
+
+	function s3_copy($bucket, $src, $dest, $args, $more=array()){
+
+		$default_args = array(
+			'acl' => 'private',
+		);
+
+		$default_more = array(
+			'http_timeout' => 30,
+			# See this? It's important. AWS freaks out at the mere presence
+			# of the 'Transfer-Encoding' header. Thanks, Roy...
+			'donotsend_transfer_encoding' => 1,
+		);
+
+		# See this? See the part where we're prefixing the copy source
+		# with the bucket ID. Yeah, that part is important. See also:
+		# https://github.com/cooperhewitt/parallel-tms/issues/225
+		# (20140520/straup)
+
+		$src = $bucket['id'] . '/' . $src;
+
+		$args = array_merge($default_args, $args);
+		$more = array_merge($default_more, $more);
+
+		$date = gmdate('D, d M Y H:i:s T');
+		$path = "/{$bucket['id']}/{$dest}";
+
+		# Okay. This is ... a thing. A couple things to note:
+		# The message body is empty. And not MD5-ed. Just empty.
+		# So is the content type. Because... well, who knows
+		# really. Also we have to include both the copy source
+		# and the ACL. Most everything else is the same except
+		# for all the headers that we don't bother setting below.
+		# (20140314/straup)
+
+		$bytes_enc = '';
+		$content_type = '';
+
+		$parts = array();
+
+		$parts[] = 'PUT';
+		$parts[] = $bytes_enc;
+		$parts[] = $content_type;
+		$parts[] = $date;
+		$parts[] = "x-amz-acl:{$args['acl']}";
+		$parts[] = "x-amz-copy-source:{$src}";
+		$parts[] = $path;
+
+		$raw = implode("\n", $parts);
+
+		$sig = s3_sign_auth_string($bucket, $raw);
+		$sig = base64_encode($sig);
+
+		$auth = "AWS {$bucket['key']}:{$sig}";
+
+		$headers = array(
+			'Content-Type' => $content_type,
+			'X-Amz-Acl' => $args['acl'],
+			'x-amz-copy-source' => $src,
+			'Authorization' => $auth,
+			'Date' => $date,
+		);
+
+		$bucket_url = s3_get_bucket_url($bucket);
+
+		# enurl-ify ?
+		$object_url = $bucket_url . $dest;
+
+		$rsp = http_put($object_url, '', $headers, $more);
+		return s3_parse_response($rsp);
+	}
+
+	########################################################################
+
+	# TO DO: Update to use s3_copy() instead of GET-ing and PUT-ing
+	# objects (20140314/straup)
 
 	function s3_rename($bucket, $old_object_id, $new_object_id, $args=array()){
 
@@ -244,6 +328,8 @@
 			'get' => null,
 			'put' => null,
 			'delete' => null,
+			'old_object_id' => $old_object_id,
+			'new_object_id' => $new_object_id,
 		);
 
 		$get_rsp = s3_get($bucket, $old_object_id);
@@ -253,7 +339,7 @@
 			return $rsp;
 		}
 
-		# FIX ME: get ACL
+		# FIX ME: get ACL (if not specified in $args)
 
 		$put_args = array(
 			'id' => $new_object_id,
@@ -268,18 +354,18 @@
 		$rsp['put'] = $put_rsp;
 
 		if (! $put_rsp['ok']){
-			return $rsp;
+			return s3_parse_response($rsp);			
 		}
 
 		$del_rsp = s3_delete($bucket, $old_object_id);
 		$rsp['delete'] = $del_rsp;
 
 		if (! $del_rsp['ok']){
-			return $rsp;
+			return s3_parse_response($rsp);
 		}
 
 		$rsp['ok'] = 1;
-		return $rsp;
+		return s3_parse_response($rsp);
 	}
 
 	########################################################################
@@ -382,20 +468,59 @@
 
 	########################################################################
 
+	# http://docs.aws.amazon.com/AmazonS3/latest/API/RESTObjectHEAD.html
+
 	function s3_head($bucket, $object_id, $args=array()) {
-		
-		$defaults = array(
-			'expires' => time() + 300,
-			'method' => 'HEAD',
+
+		$query = array();
+
+		# Note: it is your responsibility to urlencode parameters
+		# because AWS is too fussy to accept things like acl=1 so
+		# we can't use http_build_query (20120716/straup)
+
+		if (isset($args['acl'])){
+			$query[] = urlencode('acl');
+		}
+
+		if (count($query)){
+			$query = implode("&", $query);
+		}
+
+		$date = gmdate('D, d M Y H:i:s T');
+		$path = "/{$bucket['id']}/{$object_id}";
+
+		if ($query){
+			$path .= "?{$query}";
+		}
+
+		$parts = array(
+			'HEAD',
+			'',
+			'',
+			$date,
+			$path
 		);
-		
-		$args = array_merge($defaults, $args);
-	
-		$url = s3_signed_object_url($bucket, $object_id, $args);
 
-		$rsp = http_head($url);
+		$raw = implode("\n", $parts);
 
-		return $rsp;
+		$sig = s3_sign_auth_string($bucket, $raw);
+		$sig = base64_encode($sig);
+
+		$auth = "AWS {$bucket['key']}:{$sig}";
+
+		$headers = array(
+			'Date' => $date,
+			'Authorization' => $auth,
+		);
+
+		$bucket_url = s3_get_bucket_url($bucket);
+		$object_url = $bucket_url . $object_id;
+
+		if ($query){
+			$object_url .= "?{$query}";
+		}
+
+		return http_head($object_url, $headers);
 	}
 	
 	########################################################################
@@ -471,4 +596,46 @@
 	}
 
 	########################################################################
-?>
+
+	function s3_parse_response(&$rsp){
+
+		if (! $rsp['ok']){
+			s3_append_error($rsp);			
+		}
+
+		return $rsp;
+	}
+
+	########################################################################
+
+	function s3_append_error(&$rsp){
+
+		try {
+			$p = xml_parser_create();
+			xml_parse_into_struct($p, $rsp['body'], $vals, $index);
+			xml_parser_free($p);
+
+		}
+
+		catch (Exception $e){
+			return;
+		}
+
+
+		$wtf = array();
+
+		foreach ($vals as $idx => $details){
+			$key = strtolower($details['tag']);
+			$value = $details['value'];
+			$wtf[$key] = $value;
+		}
+
+		$rsp['error'] = "{$rsp['error']}, because {$wtf['code']}: {$wtf['message']}";
+		$rsp['details'] = $wtf;
+
+		# pass-by-ref
+	}
+
+	########################################################################
+
+	# the end
